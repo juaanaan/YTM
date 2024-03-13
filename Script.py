@@ -205,12 +205,20 @@ def write_to_google_sheets(service, spreadsheet_id, data):
                     values.append([code, pickup_time, entry_or_exit, pickup_time_hour, extracted_address, price, status, "", "", "", "", "", "", hash])
             else:
                 values.append([code, pickup_time, entry_or_exit, pickup_time_hour, extracted_address, price, "", "", "", "", "", "", "", hash])
-                
+
         else:
             print("No se encontró un código postal que comience con '07' o la dirección no sigue el formato esperado.")
             sys.stdout.flush()
-            # Si no se encuentra el patrón, insertamos el hash en la columna N y dejamos las otras columnas vacías
-            values.append([code, pickup_time, entry_or_exit, pickup_time_hour, non_airport_address, price, "", "", "", "", "", "", "", hash])
+            
+            # Comprobamos si la reserva ha sido cancelada
+            if status == "CANCELLED_FREE":
+                status = "CSC"
+                values.append([code, pickup_time, entry_or_exit, pickup_time_hour, non_airport_address, price, status, "", "", "", "", "", "", hash])
+            elif status == "CANCELLED_WITH_COSTS":
+                    status = "CCC"
+                    values.append([code, pickup_time, entry_or_exit, pickup_time_hour, non_airport_address, price, status, "", "", "", "", "", "", hash])
+            else:
+                values.append([code, pickup_time, entry_or_exit, pickup_time_hour, non_airport_address, price, "", "", "", "", "", "", "", hash])
             
     body = {
         'values': values
@@ -380,7 +388,7 @@ def main():
 
                 pickup_address, dropoff_address, color_id = airport(pickup_address, dropoff_address, vehicleCategory)
 
-                if status != "CANCELLED_FREE" or status != "CANCELLED_WITH_COSTS":
+                if status != "CANCELLED_FREE" and status != "CANCELLED_WITH_COSTS":
                     # Creación de Whatsapp
 
                     event_summary = generate_event_summary(code, flight_number, pickup_address, dropoff_address, result.get("pickupTime", {}).get("localTime"), client_name, email, phone, passengerCount, luggageCount, driverCode, pickup_maps_link, addOns, comments)
