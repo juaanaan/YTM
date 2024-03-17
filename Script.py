@@ -24,12 +24,12 @@ def writeCCC(service_sheets, spreadsheet_id, index):
                             body={'values': [['CCC']]}
                         ).execute()  
 
-def writeHash(service_sheets, spreadsheet_id, index, existingHash):
+def writeHash(service_sheets, spreadsheet_id, index, hash):
     service_sheets.spreadsheets().values().update(
                             spreadsheetId=spreadsheet_id,
                             range='Hoja 1!N' + str((index + 2)),
                             valueInputOption='USER_ENTERED',
-                            body={'values': [[existingHash]]}
+                            body={'values': [[hash]]}
                         ).execute()
     
 def cargar_clave():
@@ -42,7 +42,6 @@ def desencriptar_json(clave, archivo_encriptado):
     json_encriptado = open(archivo_encriptado, 'rb').read()
     json_desencriptado = cipher_suite.decrypt(json_encriptado)
     return json_desencriptado.decode()
-
 
 def is_code_in_sheets(code, data):
     """Función para verificar si un código de reserva ya existe en Google Sheets."""
@@ -110,7 +109,6 @@ def generate_google_maps_link(origin, destination):
     destination_encoded = quote_plus(destination)
     return f"https://www.google.com/maps/dir/?api=1&origin=current+location&destination={destination_encoded}&waypoints={origin_encoded}&travelmode=driving"
 
-
 def create_event(service, calendar_id, code, flight_number, pickup_address, dropoff_address, pickup_time, client_name, email, phone, passengerCount, luggageCount, pickup_maps_link, price, whatsapp_link, color_id, addOns, comments):
     """Función para crear un evento en Google Calendar."""
     # Creación de la hora de finalización para evento en Google Calendar (+1 hora)
@@ -167,8 +165,6 @@ def create_event(service, calendar_id, code, flight_number, pickup_address, drop
     event = service.events().insert(calendarId=calendar_id, body=event).execute()
     print('Evento creado: %s' % (event.get('htmlLink')))
     sys.stdout.flush()
-
-
 
 def write_to_google_sheets(service, spreadsheet_id, data):
     """Función para escribir datos en Google Sheets."""
@@ -269,8 +265,6 @@ def write_to_google_sheets(service, spreadsheet_id, data):
         print('Error al insertar datos en Google Sheets:', e)
         sys.stdout.flush()
 
-
-
 def main():
     """
     Función principal del script.
@@ -328,6 +322,8 @@ def main():
 
     response = requests.get(url, headers=headers, timeout=10)  # Tiempo de espera de 10 segundos
 
+    updated = False
+
     if response.status_code == 200:
         data = response.json()
         results = data.get("results", [])
@@ -342,8 +338,8 @@ def main():
                     # Comprobamos si el hash ha cambiado
                     index = existing_codes.index(code)
                     existingHash = service_sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range='Hoja 1!N' + str((index + 2))).execute()
-                    
-                    if existingHash == hash:
+
+                    if existingHash['values'][0][0] == hash:
                         print(f"El servicio con el código de reserva {code} ya está en la hoja de cálculo. Descartando...")
                         sys.stdout.flush()
                         continue
@@ -351,15 +347,14 @@ def main():
                     # En caso de que no coincidan los hash, querrá decir que ha habido una actualización en la reserva
                     updated = True
 
-                    # Comprobamos si la reserva ha sido cancelada
-                    
+                    # Comprobamos si la reserva ha sido cancelada                   
                     if status == "CANCELLED_FREE":
                         writeCSC(service_sheets, spreadsheet_id, index)    
-                        writeHash(service_sheets, spreadsheet_id, index, existingHash)             
+                        writeHash(service_sheets, spreadsheet_id, index, hash)             
                         continue
                     elif status == "CANCELLED_WITH_COSTS":          
                         writeCCC(service_sheets, spreadsheet_id, index)
-                        writeHash(service_sheets, spreadsheet_id, index, existingHash)
+                        writeHash(service_sheets, spreadsheet_id, index, hash)
                         continue
                 
                 flight_number = result.get("travellerInfo", {}).get("flightNumber")
@@ -379,24 +374,44 @@ def main():
                 price  = result.get("fareSummary",{}).get("includingVat")
                 driverCode = result.get("driverCode",{})
                 vehicleCategory = result.get("vehicleCategory",{})
-                addOns = result.get("addOns", [])               
-                # Creación ruta Google Maps
+                addOns = result.get("addOns", [])     
 
+                # En caso de que haya habido una actualización en la reserva, borramos la anterior
+                if updated == True:
+                    events_result = service.events().list(calendarId='juanangonzcomas@gmail.com', q='Transferz: ' + code).execute()
+                    events = events_result.get('items', [])
+
+                    # Verificamos si se encontraron eventos que coincidan con la búsqueda
+                    if events:
+                        # Se encontró al menos un evento, obtenemos su ID
+                        idEvent = events[0]['id']
+                        service.events().delete(calendarId='juanangonzcomas@gmail.com', eventId=idEvent).execute()
+                        
+                        print('Evento con código', code, 'eliminado correctamente.')
+                        sys.stdout.flush()
+
+                        # Borramos la fila correspondiente en la hoja de cálculo
+                        service_sheets.spreadsheets().values().batchClear(spreadsheetId=spreadsheet_id, body={'ranges': ['Hoja 1!A' + str(index + 2) + ':N' + str(index + 2)]}).execute()
+                        print('Fila con código', code, 'eliminada correctamente de la hoja de cálculo.')
+                        sys.stdout.flush()
+
+                    else:
+                        print('No se encontraron eventos con el código', code, 'para ser borrado del calendario')
+                        sys.stdout.flush()
+
+                # Creación ruta Google Maps
                 pickup_maps_link = generate_google_maps_link(pickup_address, dropoff_address)
 
                 # Cambio de nombre a Aeropuerto y asignación del color del evento
-
                 pickup_address, dropoff_address, color_id = airport(pickup_address, dropoff_address, vehicleCategory)
 
-                if status != "CANCELLED_FREE" and status != "CANCELLED_WITH_COSTS":
-                    # Creación de Whatsapp
+                
+                # Creación de Whatsapp
+                event_summary = generate_event_summary(code, flight_number, pickup_address, dropoff_address, result.get("pickupTime", {}).get("localTime"), client_name, email, phone, passengerCount, luggageCount, driverCode, pickup_maps_link, addOns, comments)
+                whatsapp_link = generate_whatsapp_link(event_summary)
 
-                    event_summary = generate_event_summary(code, flight_number, pickup_address, dropoff_address, result.get("pickupTime", {}).get("localTime"), client_name, email, phone, passengerCount, luggageCount, driverCode, pickup_maps_link, addOns, comments)
-                    whatsapp_link = generate_whatsapp_link(event_summary)
-
-                    # Creación del nuevo evento
-
-                    create_event(service, 'juanangonzcomas@gmail.com', code, flight_number, pickup_address, dropoff_address, result.get("pickupTime", {}).get("localTime"), client_name, email, phone, passengerCount, luggageCount, pickup_maps_link, price, whatsapp_link, color_id, addOns, comments)
+                # Creación del nuevo evento
+                create_event(service, 'juanangonzcomas@gmail.com', code, flight_number, pickup_address, dropoff_address, result.get("pickupTime", {}).get("localTime"), client_name, email, phone, passengerCount, luggageCount, pickup_maps_link, price, whatsapp_link, color_id, addOns, comments)
 
                 rows_to_append = []
                 
